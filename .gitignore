@@ -1,0 +1,69 @@
+# Variables de entorno con información sensible
+.env
+.env.local
+.env.production
+.env.staging
+
+# Archivos de configuración con claves privadas
+config.json
+hyperliquid_production.json
+
+# Base de datos de Freqtrade
+user_data/
+*.sqlite
+*.db
+
+# Logs
+*.log
+logs/
+
+# Archivos temporales
+*.tmp
+*.temp
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backups
+*.bak
+*.backup
+
+# Archivos de resultados de backtesting
+backtest_results/
+hyperopt_results/

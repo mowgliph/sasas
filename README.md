@@ -94,12 +94,40 @@ atr_takeprofit_multiplier = 1.5  # ROI = ATR × 1.5
 pip install freqtrade
 pip install talib-binary
 pip install technical
+pip install python-dotenv  # Para cargar variables de entorno
 ```
+
+### ⚠️ Configuración de Seguridad
+
+**IMPORTANTE**: Este proyecto utiliza variables de entorno para proteger información sensible.
+
+1. **Configurar variables de entorno**:
+   ```bash
+   # Copiar el archivo de ejemplo
+   cp .env.example .env
+   
+   # Editar .env con tus datos reales
+   # NUNCA subir este archivo al repositorio
+   ```
+
+2. **Variables requeridas**:
+   - `HYPERLIQUID_WALLET_ADDRESS`: Tu dirección de wallet
+   - `HYPERLIQUID_PRIVATE_KEY`: Tu clave privada (¡MANTENER SECRETA!)
+   - `TELEGRAM_BOT_TOKEN`: Token de tu bot de Telegram
+   - `TELEGRAM_CHAT_ID`: ID de tu chat de Telegram
+   - `JWT_SECRET_KEY`: Clave secreta para JWT
+   - `WS_TOKEN`: Token para WebSocket
+   - `API_USERNAME`: Usuario para API
+   - `API_PASSWORD`: Contraseña para API
 
 ### Configuración en Freqtrade
 
 1. Copiar `SASAS.py` a la carpeta `user_data/strategies/`
-2. Configurar en `config.json`:
+2. **Configurar variables de entorno** (recomendado para seguridad):
+   - Copiar `.env.example` a `.env`
+   - Completar todas las variables con tus datos reales
+   - **NUNCA** subir el archivo `.env` al repositorio
+3. Configurar en `config.json`:
 
 ```json
 {
