@@ -28,8 +28,8 @@ class SASAS(IStrategy):
     timeframe = '15m'
 
     # ROI y SL internos por defecto en 10%
-    minimal_roi = {"0": 0.1}
-    stoploss = -0.02  # Stoploss fijo al 2% para evitar pérdidas mayores
+    minimal_roi = {"0": 0.2}
+    stoploss = -0.2
     
     # Activando Custom ROI y STOPLOSS
     use_custom_roi = True
