@@ -26,8 +26,10 @@ class SASAS(IStrategy):
     startup_candle_count = 120
     timeframe = '15m'
 
-    minimal_roi = {"0": 0.1}  
-    stoploss = -0.1  
+    minimal_roi = {
+        "0": 0.10,
+    }
+    stoploss = 0.10
 
     sup_period = IntParameter(7, 30, default=14, space='strategy', optimize=True)  
     sup_multiplier = DecimalParameter(1.0, 3.0, default=1.8, decimals=2, space='strategy', optimize=True)  
@@ -42,7 +44,7 @@ class SASAS(IStrategy):
     atr_period = IntParameter(5, 20, default=14, space="strategy", optimize=True)  
 
     def version(self) -> str:  
-        return "SASAS_v0.3.16_debug"  
+        return "SASAS_v0.3.20"  
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:  
         dataframe = supertrend(  
@@ -58,9 +60,12 @@ class SASAS(IStrategy):
             alma_offset=float(self.ash_alma_offset.value),  
             alma_sigma=int(self.ash_alma_sigma.value)  
         )  
-        dataframe["atr"] = ta.ATR(  
-            dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=int(self.atr_period.value)  
-        )  
+        dataframe['atr'] = ta.ATR(
+            dataframe['high'], 
+            dataframe['low'], 
+            dataframe['close'], 
+            timeperiod=int(self.atr_period.value)
+        )
           
         return dataframe  
 
@@ -79,73 +84,96 @@ class SASAS(IStrategy):
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:  
         return dataframe  
           
-    def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:  
-        try:  
-            # Para obtener amount / rate / time_in_force si están disponibles:  
-            amount = kwargs.get('amount', None)  
-            rate = kwargs.get('rate', None)  
-            time_in_force = kwargs.get('time_in_force', None)  
+    def process_entry(self, trade: 'Trade', order: dict, **kwargs) -> None:
+        """
+        Called when a new trade is opened.
+        Store ATR at entry in trade.user_data for later use in TP/SL calculations.
+        """
+        try:
+            # Get the dataframe up to the entry time
+            dataframe, _ = self.dp.get_analyzed_dataframe(trade.pair, self.timeframe)
+            
+            # Find the candle where the trade was opened
+            entry_candle = dataframe[dataframe['date'] <= trade.open_date_utc].iloc[-1]
+            atr_at_entry = entry_candle['atr']
+            
+            # Initialize user_data if it doesn't exist
+            if not hasattr(trade, 'user_data') or trade.user_data is None:
+                trade.user_data = {}
+                
+            # Store ATR at entry
+            trade.user_data['atr_at_entry'] = float(atr_at_entry)
+            
+            logger.info(
+                f"Trade {trade.id} ({trade.pair}): "
+                f"Stored ATR at entry: {atr_at_entry:.5f}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in process_entry for trade {trade.id}: {e}")
 
-            dataframe, last_updated = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-            if dataframe.empty:
-                logger.warning(f"[custom_exit - order_filled] DataFrame vacío para trade {trade.id} ({pair})")
-                return
+    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
+                       current_rate: float, current_profit: float, **kwargs) -> float:
+        """
+        Custom stoploss logic using ATR at entry.
+        Returns stoploss in absolute value (current price * relative stoploss).
+        """
+        # Get ATR at entry from trade.user_data
+        atr_at_entry = trade.user_data.get('atr_at_entry')
+        
+        if atr_at_entry is None or atr_at_entry <= 0:
+            logger.warning(f"No valid ATR at entry for {pair}, using default stoploss")
+            return 1  # Fallback to default stoploss
 
-            last_candle = dataframe.iloc[-2]  
-            atr = last_candle.get("atr", None)  
+        # Calculate stoploss price based on ATR at entry
+        if trade.is_short:
+            stop_price = trade.open_rate + (atr_at_entry * 1.5)  # 1.5x ATR for shorts
+            # Convert to relative stoploss value
+            stoploss = 1 - (stop_price / current_rate)
+        else:  # Long
+            stop_price = trade.open_rate - (atr_at_entry * 1.5)  # 1.5x ATR for longs
+            # Convert to relative stoploss value
+            stoploss = (current_rate - stop_price) / current_rate
 
-            if atr is not None and np.isfinite(atr) and atr > 0:  
-                tp_multiplier = 1.0  
-                sl_multiplier = 1.5  
+        # Ensure stoploss is within reasonable bounds
+        stoploss = min(0.9, max(0.02, abs(stoploss)))  # Between 2% and 90%
+        
+        logger.info(
+            f"Custom stoploss for {pair} {trade.entry_side.upper()}: "
+            f"ATR={atr_at_entry:.5f}, Stop Price={stop_price:.5f}, Stoploss={stoploss*100:.2f}%"
+        )
+        return stoploss
 
-                if trade.nr_of_successful_entries == 0 and (order.ft_order_side == trade.entry_side):  
-                    if trade.entry_side == 'long':  
-                        tp_level = trade.open_rate + atr * tp_multiplier  
-                        sl_level = trade.open_rate - atr * sl_multiplier  
-                    else:  
-                        tp_level = trade.open_rate - atr * tp_multiplier  
-                        sl_level = trade.open_rate + atr * sl_multiplier  
-
-                    trade.set_custom_data("tp_level", float(tp_level))  
-                    trade.set_custom_data("sl_level", float(sl_level))  
-
-                    logger.info(  
-                        f"[custom_exit - order_filled] trade {trade.id} ({pair}): tp_level={tp_level:.5f}, sl_level={sl_level:.5f}, side={trade.entry_side}"  
-                    )  
-            else:  
-                logger.warning(f"[custom_exit - order_filled] ATR inválido en trade {trade.id} ({pair})")  
-        except Exception as e:  
-            logger.error(f"[custom_exit - order_filled] Exception en trade {trade.id} ({pair}): {e}")  
-              
-    def custom_exit(self, pair: str, trade: Trade, current_time: datetime,  
-                    current_rate: float, current_profit: float, **kwargs) -> Optional[str]:  
-        tp_level = trade.get_custom_data("tp_level", None)  
-        sl_level = trade.get_custom_data("sl_level", None)  
-
-        logger.debug(  
-            f"[custom_exit] trade {trade.id} ({pair}): current_rate={current_rate:.5f}, tp_level={tp_level}, sl_level={sl_level}, entry_side={trade.entry_side}"  
-        )  
-
-        if tp_level is None or sl_level is None:  
-            logger.debug(f"[custom_exit] trade {trade.id}: Niveles TP/SL no definidos")  
-            return None  
-
-        exit_reason = None  
-
-        if trade.entry_side == 'long':  
-            if current_rate >= tp_level:  
-                exit_reason = "tp_reached"  
-            elif current_rate <= sl_level:  
-                exit_reason = "sl_reached"  
-        else:  
-            if current_rate <= tp_level:  
-                exit_reason = "tp_reached"  
-            elif current_rate >= sl_level:  
-                exit_reason = "sl_reached"  
-
-        if exit_reason:  
-            logger.info(f"[custom_exit] trade {trade.id} ({pair}): salida {exit_reason} a precio {current_rate:.5f}")  
-            return exit_reason  
+    def custom_exit(self, pair: str, trade: Trade, current_time: datetime,
+                   current_rate: float, current_profit: float, **kwargs) -> Optional[str]:
+        """
+        Custom exit logic based on ATR take profit.
+        Uses ATR at entry stored in trade.user_data.
+        """
+        # Get ATR at entry from trade.user_data
+        atr_at_entry = trade.user_data.get('atr_at_entry')
+        
+        if atr_at_entry is None or atr_at_entry <= 0:
+            logger.warning(f"No valid ATR at entry for {pair}, skipping TP check")
+            return None
+            
+        # Check take profit condition for long positions
+        if trade.is_long and current_rate >= (trade.open_rate + atr_at_entry * 1.0):
+            logger.info(
+                f"Take profit hit for {pair} LONG: "
+                f"Entry={trade.open_rate:.5f}, Current={current_rate:.5f}, "
+                f"ATR at entry={atr_at_entry:.5f}, TP={trade.open_rate + atr_at_entry * 1.0:.5f}"
+            )
+            return 'take_profit_atr'
+        
+        # Check take profit condition for short positions
+        if trade.is_short and current_rate <= (trade.open_rate - atr_at_entry * 1.0):
+            logger.info(
+                f"Take profit hit for {pair} SHORT: "
+                f"Entry={trade.open_rate:.5f}, Current={current_rate:.5f}, "
+                f"ATR at entry={atr_at_entry:.5f}, TP={trade.open_rate - atr_at_entry * 1.0:.5f}"
+            )
+            return 'take_profit_atr'
 
         return None  
 
