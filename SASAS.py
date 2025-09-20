@@ -1,25 +1,24 @@
-# --- Do not remove these imports ---
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pandas import DataFrame
-from typing import Dict, Optional, Union, Tuple
+from typing import Optional
+import logging
 
 from freqtrade.strategy import (
     IStrategy,
-    Trade, 
+    Trade,
     Order,
-    # Hyperopt Parameters
     BooleanParameter,
     CategoricalParameter,
     DecimalParameter,
     IntParameter,
-    RealParameter,
 )
 
-# --------------------------------
-# Add your lib to import here
 import talib.abstract as ta
+
+logger = logging.getLogger(__name__)
+
 
 class SASAS(IStrategy):
     INTERFACE_VERSION = 3
@@ -27,139 +26,137 @@ class SASAS(IStrategy):
     startup_candle_count = 120
     timeframe = '15m'
 
-    # ROI y SL internos por defecto en 10%
-    minimal_roi = {"0": 0.2}
-    stoploss = -0.2
-    
-    # Activando Custom ROI y STOPLOSS
-    use_custom_roi = True
-    use_custom_stoploss = True  # Activado para stoploss dinámico basado en ATR
-    
-    # Trailing stop: DESACTIVADO para evitar cierres prematuros
-    trailing_stop = False
-    trailing_stop_positive = None
-    trailing_stop_positive_offset = None
-    trailing_only_offset_is_reached = False
+    minimal_roi = {"0": 0.1}  
+    stoploss = -0.1  
 
-    # Parámetros optimizables
-    sup_period = IntParameter(7, 30, default=14, space='buy', optimize=True)
-    sup_multiplier = DecimalParameter(1.0, 3.0, default=1.8, decimals=2, space='buy', optimize=True)
+    sup_period = IntParameter(7, 30, default=14, space='strategy', optimize=True)  
+    sup_multiplier = DecimalParameter(1.0, 3.0, default=1.8, decimals=2, space='strategy', optimize=True)  
 
-    ash_length = IntParameter(5, 40, default=16, space='buy', optimize=True)
-    ash_smooth = IntParameter(2, 10, default=4, space='buy', optimize=True)
-    ash_mode = CategoricalParameter(['RSI', 'STOCHASTIC', 'ADX'], default='RSI', space='buy', optimize=True)
-    ash_ma_type = CategoricalParameter(['ALMA', 'EMA', 'WMA', 'SMA', 'SMMA', 'HMA'], default='EMA', space='buy', optimize=True)
-    ash_alma_offset = DecimalParameter(0, 1.5, default=0.85, decimals=2, space='buy', optimize=True)
-    ash_alma_sigma = IntParameter(1, 10, default=6, space='buy', optimize=True)
+    ash_length = IntParameter(5, 40, default=16, space='strategy', optimize=True)  
+    ash_smooth = IntParameter(2, 10, default=4, space='strategy', optimize=True)  
+    ash_mode = CategoricalParameter(['RSI', 'STOCHASTIC', 'ADX'], default='RSI', space='strategy', optimize=True)  
+    ash_ma_type = CategoricalParameter(['ALMA', 'EMA', 'WMA', 'SMA', 'SMMA', 'HMA'], default='EMA', space='strategy', optimize=True)  
+    ash_alma_offset = DecimalParameter(0, 1.5, default=0.85, decimals=2, space='strategy', optimize=True)  
+    ash_alma_sigma = IntParameter(1, 10, default=6, space='strategy', optimize=True)  
 
-    atr_stoploss_multiplier = 1.5  # Multiplicador para stoploss dinámico sobre ATR
-    atr_takeprofit_multiplier = 1.5 # Multiplicador para takeprofit sobre ATR
+    atr_period = IntParameter(5, 20, default=14, space="strategy", optimize=True)  
 
-    def version(self) -> str:
-        return "SASAS_v0.3.0_tester"
+    def version(self) -> str:  
+        return "SASAS_v0.3.16_debug"  
 
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe = supertrend(
-            dataframe, period=int(self.sup_period.value), multiplier=float(self.sup_multiplier.value)
-        )
-        dataframe = ash_with_color(
-            dataframe,
-            length=int(self.ash_length.value),
-            smooth=int(self.ash_smooth.value),
-            src="close",
-            mode=self.ash_mode.value,
-            ma_type=self.ash_ma_type.value,
-            alma_offset=float(self.ash_alma_offset.value),
-            alma_sigma=int(self.ash_alma_sigma.value)
-        )
-        # ATR estándar TA-Lib para ROI dinámico
-        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
-        return dataframe
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:  
+        dataframe = supertrend(  
+            dataframe, period=int(self.sup_period.value), multiplier=float(self.sup_multiplier.value)  
+        )  
+        dataframe = ash_with_color(  
+            dataframe,  
+            length=int(self.ash_length.value),  
+            smooth=int(self.ash_smooth.value),  
+            src="close",  
+            mode=self.ash_mode.value,  
+            ma_type=self.ash_ma_type.value,  
+            alma_offset=float(self.ash_alma_offset.value),  
+            alma_sigma=int(self.ash_alma_sigma.value)  
+        )  
+        dataframe["atr"] = ta.ATR(  
+            dataframe["high"], dataframe["low"], dataframe["close"], timeperiod=int(self.atr_period.value)  
+        )  
+          
+        return dataframe  
 
-    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe['enter_long'] = (
-            (dataframe['supertrend_direction'] == 1) &
-            dataframe['ash_bullish_signal']
-        ).astype(int)
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:  
+        dataframe['enter_long'] = (  
+            (dataframe['supertrend_direction'] == 1) &  
+            dataframe['ash_bullish_signal']  
+        ).astype(int)  
 
-        dataframe['enter_short'] = (
-            (dataframe['supertrend_direction'] == -1) &
-            dataframe['ash_bearish_signal']
-        ).astype(int)
-        return dataframe
+        dataframe['enter_short'] = (  
+            (dataframe['supertrend_direction'] == -1) &  
+            dataframe['ash_bearish_signal']  
+        ).astype(int)  
+        return dataframe  
 
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Método vacío para cumplir con la estructura esperada
-        return dataframe
-        
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:  
+        return dataframe  
+          
+    def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:  
+        try:  
+            # Para obtener amount / rate / time_in_force si están disponibles:  
+            amount = kwargs.get('amount', None)  
+            rate = kwargs.get('rate', None)  
+            time_in_force = kwargs.get('time_in_force', None)  
 
-    def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
-        """
-        Callback llamado cuando se llena una orden.
-        Guarda el ATR de la última vela en el momento de la primera entrada para calcular ROI y Stoploss dinámicos.
-        """
-        try:
-            dataframe, _ = self.dp.get_analyzed_dataframe(trade.pair, self.timeframe)
-            last_candle = dataframe.iloc[-1].squeeze()
-            # Solo guardar ATR en la primera entrada del trade y si la orden es de entrada
-            if (trade.nr_of_successful_entries == 1) and (order.ft_order_side == trade.entry_side):
-                atr_value = last_candle.get("atr", None)
-                if atr_value is not None and np.isfinite(atr_value):
-                    trade.set_custom_data(key="entry_atr", value=float(atr_value))
-        except Exception:
-            pass  # En caso de error no hacer nada para evitar crash
+            dataframe, last_updated = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+            if dataframe.empty:
+                logger.warning(f"[custom_exit - order_filled] DataFrame vacío para trade {trade.id} ({pair})")
+                return
 
-    def custom_roi(self, pair: str, trade: Trade, current_time: datetime, trade_duration: int,
-                   entry_tag: str | None, side: str, **kwargs) -> float | None:
-        """
-        ROI dinámico basado en el ATR guardado en la entrada multiplicado por atr_takeprofit_multiplier.
-        """
-        try:
-            entry_atr = trade.get_custom_data("entry_atr")
-            if entry_atr is None:
-                return 0.1  # Fallback al 10% si no hay ATR
-            
-            entry_price = trade.open_rate
-            if entry_price and entry_price > 0:
-                entry_atr = float(entry_atr)
-                if np.isfinite(entry_atr) and entry_atr > 0:
-                    roi_value = (entry_atr * self.atr_takeprofit_multiplier) / entry_price
-                    return max(roi_value, 0.05)  # Mínimo 5% de ROI
-        except Exception:
-            return 0.05  # Fallback seguro al 5%
-        return 0.05   
-        
-    def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime,
-                        current_rate: float, current_profit: float, after_fill: bool,
-                        **kwargs) -> float | None:
-        """
-        Stoploss dinámico basado en ATR - sin trailing, salida completa al tocar el stop.
-        """
-        try:
-            entry_atr = trade.get_custom_data("entry_atr")
-            if entry_atr is None:
-                return None  # Usar stoploss fijo por defecto
-            
-            entry_price = trade.open_rate
-            if entry_price and entry_price > 0:
-                entry_atr = float(entry_atr)
-                if np.isfinite(entry_atr) and entry_atr > 0:
-                    # Stoploss fijo basado en ATR (sin trailing)
-                    stoploss_distance = entry_atr * self.atr_stoploss_multiplier
-                    stoploss_ratio = -stoploss_distance / entry_price
-                    return stoploss_ratio
-        except Exception:
-            return None  # Usar stoploss por defecto en caso de error
-        return None
-        
-    def leverage(self, pair: str, current_time: datetime,
-                 current_rate: float, proposed_leverage: float,
-                 max_leverage: float, side: str, **kwargs) -> float:
-        # Configurar apalancamiento deseado, por ejemplo 10x
-        return 20.0
+            last_candle = dataframe.iloc[-2]  
+            atr = last_candle.get("atr", None)  
+
+            if atr is not None and np.isfinite(atr) and atr > 0:  
+                tp_multiplier = 1.0  
+                sl_multiplier = 1.5  
+
+                if trade.nr_of_successful_entries == 0 and (order.ft_order_side == trade.entry_side):  
+                    if trade.entry_side == 'long':  
+                        tp_level = trade.open_rate + atr * tp_multiplier  
+                        sl_level = trade.open_rate - atr * sl_multiplier  
+                    else:  
+                        tp_level = trade.open_rate - atr * tp_multiplier  
+                        sl_level = trade.open_rate + atr * sl_multiplier  
+
+                    trade.set_custom_data("tp_level", float(tp_level))  
+                    trade.set_custom_data("sl_level", float(sl_level))  
+
+                    logger.info(  
+                        f"[custom_exit - order_filled] trade {trade.id} ({pair}): tp_level={tp_level:.5f}, sl_level={sl_level:.5f}, side={trade.entry_side}"  
+                    )  
+            else:  
+                logger.warning(f"[custom_exit - order_filled] ATR inválido en trade {trade.id} ({pair})")  
+        except Exception as e:  
+            logger.error(f"[custom_exit - order_filled] Exception en trade {trade.id} ({pair}): {e}")  
+              
+    def custom_exit(self, pair: str, trade: Trade, current_time: datetime,  
+                    current_rate: float, current_profit: float, **kwargs) -> Optional[str]:  
+        tp_level = trade.get_custom_data("tp_level", None)  
+        sl_level = trade.get_custom_data("sl_level", None)  
+
+        logger.debug(  
+            f"[custom_exit] trade {trade.id} ({pair}): current_rate={current_rate:.5f}, tp_level={tp_level}, sl_level={sl_level}, entry_side={trade.entry_side}"  
+        )  
+
+        if tp_level is None or sl_level is None:  
+            logger.debug(f"[custom_exit] trade {trade.id}: Niveles TP/SL no definidos")  
+            return None  
+
+        exit_reason = None  
+
+        if trade.entry_side == 'long':  
+            if current_rate >= tp_level:  
+                exit_reason = "tp_reached"  
+            elif current_rate <= sl_level:  
+                exit_reason = "sl_reached"  
+        else:  
+            if current_rate <= tp_level:  
+                exit_reason = "tp_reached"  
+            elif current_rate >= sl_level:  
+                exit_reason = "sl_reached"  
+
+        if exit_reason:  
+            logger.info(f"[custom_exit] trade {trade.id} ({pair}): salida {exit_reason} a precio {current_rate:.5f}")  
+            return exit_reason  
+
+        return None  
+
+    def leverage(self, pair: str, current_time: datetime,  
+                 current_rate: float, proposed_leverage: float,  
+                 max_leverage: float, side: str, **kwargs) -> float:  
+        return 25.0
 
 
-# ==== Indicadores auxiliares ====
+# === Funciones auxiliares ===
+
 def supertrend(df: pd.DataFrame, period: int = 14, multiplier: float = 1.8) -> pd.DataFrame:
     atr = ta.ATR(df, timeperiod=period)
     hl2 = (df['high'] + df['low']) / 2
@@ -179,14 +176,13 @@ def supertrend(df: pd.DataFrame, period: int = 14, multiplier: float = 1.8) -> p
         else:
             trend[i] = prev_trend
             direction[i] = prev_dir
-            if direction[i] == 1 and lowerband.iloc[i] > trend[i]:
-                trend[i] = lowerband.iloc[i]
-            if direction[i] == -1 and upperband.iloc[i] < trend[i]:
-                trend[i] = upperband.iloc[i]
+        if direction[i] == 1 and lowerband.iloc[i] > trend[i]:
+            trend[i] = lowerband.iloc[i]
+        if direction[i] == -1 and upperband.iloc[i] < trend[i]:
+            trend[i] = upperband.iloc[i]
     df['supertrend'] = trend
     df['supertrend_direction'] = direction
     return df
-
 
 def ash_with_color(df: pd.DataFrame, length: int = 16, smooth: int = 4, src: str = "close",
                    mode: str = "RSI", ma_type: str = "EMA",
@@ -215,41 +211,41 @@ def ash_with_color(df: pd.DataFrame, length: int = 16, smooth: int = 4, src: str
             return pd.Series(alma(series, window=period, offset=alma_offset, sigma=alma_sigma), index=df.index)
         return pd.Series(ta.EMA(series, timeperiod=period), index=df.index)
 
-    prices = pd.Series(df[src], index=df.index)
-    price1 = ma_func(prices, 1)
-    price2 = ma_func(prices.shift(1), 1)
+    prices = pd.Series(df[src], index=df.index)  
+    price1 = ma_func(prices, 1)  
+    price2 = ma_func(prices.shift(1), 1)  
 
-    Bulls0 = 0.5 * (abs(price1 - price2) + (price1 - price2))
-    Bears0 = 0.5 * (abs(price1 - price2) - (price1 - price2))
-    Bulls1 = price1 - prices.rolling(length).min()
-    Bears1 = prices.rolling(length).max() - price1
-    Bulls2 = 0.5 * (abs(df['high'] - df['high'].shift(1)) + (df['high'] - df['high'].shift(1)))
-    Bears2 = 0.5 * (abs(df['low'].shift(1) - df['low']) + (df['low'].shift(1) - df['low']))
+    Bulls0 = 0.5 * (abs(price1 - price2) + (price1 - price2))  
+    Bears0 = 0.5 * (abs(price1 - price2) - (price1 - price2))  
+    Bulls1 = price1 - prices.rolling(length).min()  
+    Bears1 = prices.rolling(length).max() - price1  
+    Bulls2 = 0.5 * (abs(df['high'] - df['high'].shift(1)) + (df['high'] - df['high'].shift(1)))  
+    Bears2 = 0.5 * (abs(df['low'].shift(1) - df['low']) + (df['low'].shift(1) - df['low']))  
 
-    Bulls, Bears = (Bulls0, Bears0) if mode == "RSI" else (Bulls1, Bears1) if mode == "STOCHASTIC" else (Bulls2, Bears2)
-    AvgBulls = ma_func(Bulls, length)
-    AvgBears = ma_func(Bears, length)
-    SmthBulls = ma_func(AvgBulls, smooth)
-    SmthBears = ma_func(AvgBears, smooth)
-    difference = pd.Series(abs(SmthBulls - SmthBears), index=df.index)
+    Bulls, Bears = (Bulls0, Bears0) if mode == "RSI" else (Bulls1, Bears1) if mode == "STOCHASTIC" else (Bulls2, Bears2)  
+    AvgBulls = ma_func(Bulls, length)  
+    AvgBears = ma_func(Bears, length)  
+    SmthBulls = ma_func(AvgBulls, smooth)  
+    SmthBears = ma_func(AvgBears, smooth)  
+    difference = pd.Series(abs(SmthBulls - SmthBears), index=df.index)  
 
-    ash_color = pd.Series(['gray'] * len(df), index=df.index)
-    ash_color[(difference > SmthBulls) & (SmthBears < SmthBears.shift(1))] = 'orange'
-    ash_color[(difference > SmthBulls) & ~(SmthBears < SmthBears.shift(1))] = 'red'
-    ash_color[(difference > SmthBears) & (SmthBulls < SmthBulls.shift(1))] = 'lime'
-    ash_color[(difference > SmthBears) & ~(SmthBulls < SmthBulls.shift(1))] = 'green'
+    ash_color = pd.Series(['gray'] * len(df), index=df.index)  
+    ash_color[(difference > SmthBulls) & (SmthBears < SmthBears.shift(1))] = 'orange'  
+    ash_color[(difference > SmthBulls) & ~(SmthBears < SmthBears.shift(1))] = 'red'  
+    ash_color[(difference > SmthBears) & (SmthBulls < SmthBulls.shift(1))] = 'lime'  
+    ash_color[(difference > SmthBears) & ~(SmthBulls < SmthBulls.shift(1))] = 'green'  
 
-    ash_bullish_signal = ash_color.isin(['green', 'lime']) & (
-        (ash_color.shift(1) == 'gray') | (ash_color != ash_color.shift(1))
-    )
-    ash_bearish_signal = ash_color.isin(['red', 'orange']) & (
-        (ash_color.shift(1) == 'gray') | (ash_color != ash_color.shift(1))
-    )
+    ash_bullish_signal = ash_color.isin(['green', 'lime']) & (  
+        (ash_color.shift(1) == 'gray') | (ash_color != ash_color.shift(1))  
+    )  
+    ash_bearish_signal = ash_color.isin(['red', 'orange']) & (  
+        (ash_color.shift(1) == 'gray') | (ash_color != ash_color.shift(1))  
+    )  
 
-    df['ash_bulls'] = AvgBulls
-    df['ash_bears'] = AvgBears
-    df['ash_diff'] = difference
-    df['ash_color'] = ash_color
-    df['ash_bullish_signal'] = ash_bullish_signal
-    df['ash_bearish_signal'] = ash_bearish_signal
+    df['ash_bulls'] = AvgBulls  
+    df['ash_bears'] = AvgBears  
+    df['ash_diff'] = difference  
+    df['ash_color'] = ash_color  
+    df['ash_bullish_signal'] = ash_bullish_signal  
+    df['ash_bearish_signal'] = ash_bearish_signal  
     return df
